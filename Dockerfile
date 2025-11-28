@@ -2,9 +2,9 @@ FROM continuumio/miniconda3
 
 WORKDIR /app
 
-COPY enviroment.yml .
+COPY environment.yml .
 
-RUN conda env create -f enviroment.yml
+RUN conda env create -f environment.yml
 
 ENV PATH /opt/conda/envs/AA1GPU/bin:$PATH
 

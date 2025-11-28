@@ -1,0 +1,15 @@
+name: AA1GPU
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - geopandas
+  - shapely
+  - pandas
+  - numpy<2.0
+  - scikit-learn
+  - joblib
+  - pip
+  - pip:
+    - tensorflow-cpu==2.10

@@ -17,13 +17,13 @@ from utils import aplicar_imputacion_numerica_guardada, codificador_ciclico,impu
 from utils import MESES, ESTACIONES, STATIONS_POINTS, DIRECCIONES_VIENTO
 
 
-preprocesadores = joblib.load(".\\imputadores\\preprocesadores.pkl")
+preprocesadores = joblib.load("preprocesadores.pkl")
 scaler = preprocesadores['scaler']
 ohe = preprocesadores['ohe']
 encoder = preprocesadores['encoder']
 
 dataTest = pd.read_csv('input.csv')
-regiones_8 = gpd.read_file('.\\Shapefiles\\NRM_clusters.shp')
+regiones_8 = gpd.read_file('./Shapefiles/NRM_clusters.shp')
 
 col_num = dataTest.select_dtypes(include=np.number).columns.to_list()
 dataTest['Date'] = pd.to_datetime(dataTest['Date'])
