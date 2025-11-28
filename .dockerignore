@@ -1,6 +1,7 @@
 .vscode/
 weatherAUS.csv
 logs.log
+enviroment.yml
 PyCaret_ConfMat.png
 requirements.txtgi
 TP-Clasificacion-AA1.ipynb
