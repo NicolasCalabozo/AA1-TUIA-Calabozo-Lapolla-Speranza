@@ -3,9 +3,25 @@ import geopandas as gpd
 import pandas as pd
 from shapely import wkt
 import joblib
+from sklearn.base import BaseEstimator, ClassifierMixin
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers #type: ignore
+from tensorflow.keras.models import Sequential #type: ignore
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization, Activation #type: ignore
+from tensorflow.keras.optimizers import Adam #type: ignore 
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau #type: ignore
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import precision_recall_curve, f1_score
 
 from utils import aplicar_imputacion_numerica_guardada, codificador_ciclico,imputador_categorico_produccion
 from utils import MESES, ESTACIONES, STATIONS_POINTS, DIRECCIONES_VIENTO
+
+
+preprocesadores = joblib.load(".\\imputadores\\preprocesadores.pkl")
+scaler = preprocesadores['scaler']
+ohe = preprocesadores['ohe']
+encoder = preprocesadores['encoder']
+
 dataTest = pd.read_csv('input.csv')
 regiones_8 = gpd.read_file('.\\Shapefiles\\NRM_clusters.shp')
 
@@ -57,11 +73,9 @@ columnas_numericas_imputadas = ['MinTemp_imputada', 'MaxTemp_imputada',
        'Cloud3pm_imputada', 'Temp9am_imputada', 'Temp3pm_imputada']
 dataTest[columnas_numericas_imputadas] = scaler.transform(dataTest[columnas_numericas_imputadas])
 
-#Drop de columnas ya imputadas y/o codificadas
 dataTest = dataTest.drop(columns=col_num, axis=1)
 dataTest = dataTest.drop(columns=['label','gpd_coordenadas','Temporada','Date', 'Location', 'WindGustDir', 'WindDir9am', 'WindDir3pm'], axis=1)
 
 modelo_cargado = joblib.load('modelo_red_neuronal.pkl')
 prediccion = modelo_cargado.predict(dataTest)
 print(f"Predicción: {prediccion}") 
-# Salida: [0] o [1] (Usando el threshold óptimo que se guardó)
