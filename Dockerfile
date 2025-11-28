@@ -4,7 +4,7 @@ WORKDIR /app
 
 COPY enviroment.yml .
 
-RUN conda env create -f environment.yml
+RUN conda env create -f enviroment.yml
 
 ENV PATH /opt/conda/envs/AA1GPU/bin:$PATH
 
