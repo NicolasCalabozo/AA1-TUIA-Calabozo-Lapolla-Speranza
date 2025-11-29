@@ -8,7 +8,7 @@ dependencies:
   - shapely
   - pandas
   - numpy<2.0
-  - scikit-learn
+  - scikit-learn=1.4.2
   - joblib
   - pip
   - pip:

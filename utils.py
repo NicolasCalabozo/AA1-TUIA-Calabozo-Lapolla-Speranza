@@ -2,6 +2,18 @@ import numpy as np
 import pandas as pd
 import pickle
 import os
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import Dense, Dropout, BatchNormalization, Activation
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from sklearn.utils.class_weight import compute_class_weight
+from sklearn.metrics import precision_recall_curve, f1_score
+from sklearn.base import BaseEstimator, ClassifierMixin
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
 
 #Mapeo de estaciones
 ESTACIONES = {
@@ -71,6 +83,210 @@ DIRECCIONES_VIENTO = [
     'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
     'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'
 ]
+
+class RedLluviaPipeline(BaseEstimator, ClassifierMixin):
+    def __init__(self, learning_rate=0.0005, epochs=100, batch_size=128,
+                 capas_ocultas=[64, 64, 32], dropout_rate=0.25, random_state=None):
+
+        self.learning_rate = learning_rate
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.capas_ocultas = capas_ocultas
+        self.dropout_rate = dropout_rate
+        #Threshold óptimo calculado a partir de la precision recall curve
+        self.best_threshold_ = 0.5
+        self.random_state = random_state
+        #Modelo fiteado
+        self.model_ = None
+        #Necesario para graficar el error de entrenamiento vs. validación
+        self.history_ = None
+        #Clases aprendidas por el modelo
+        self.classes_ = None
+
+    def fit(self, X, y):
+        """
+        Entrena el modelo y encuentra el mejor threshold de que maximiza el f1_score.
+        """
+        #Se setea el random state en caso de ser proporcionado
+        if self.random_state is not None:
+            tf.random.set_seed(self.random_state)
+            np.random.seed(self.random_state)
+            random.seed(self.random_state)
+        #Cantidad de columnas (variables de entrada)
+        input_dim = X.shape[1]
+        #Clases únicas detectadas
+        self.classes_ = np.unique(y)
+        #Train-test split del conjunto de entrenamiento, podría considerarse una split para validación
+        #útil para el fit del modelo y para el cálculo del mejor umbral para maximizar el f1_score
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, stratify=y, random_state=42
+        )
+        #Balanceo de pesos
+        pesos = compute_class_weight(
+            class_weight='balanced',
+            classes=self.classes_,
+            y=y_train
+        )
+        class_weights_dict = dict(enumerate(pesos))
+        self._construir_modelo(input_dim)
+        #Callbacks para early stopping (paciencia alta) para maximizar el f1-score
+        #restore_best_weights permite 'guardar' los mejores pesos encontrados hasta el momento
+        early_stopper = EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.2, patience=5, min_lr=1e-6, verbose=0)
+        #Fit del modelo
+        self.history_ = self.model_.fit(
+            X_train, y_train,
+            epochs=self.epochs,
+            batch_size=self.batch_size,
+            validation_data=(X_test, y_test),
+            verbose=0,
+            callbacks=[early_stopper, reduce_lr],
+            class_weight=class_weights_dict
+        )
+
+        #Una vez fiteado el modelo, hacemos las predicciones (utilizando el método predict del modelo de keras)
+        #no confundirse con el método predict de la clase 'RedLluviaPipeline'
+        val_probs = self.model_.predict(X_test, verbose=0)
+
+        #Calculamos el umbral óptimo para F1
+        precision, recall, thresholds = precision_recall_curve(y_test, val_probs)
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-7)
+
+        mejor_f1_index = np.argmax(f1_scores)
+
+        #Seteamos el umbral optimo como variable interna de la clase, si y solo si es un índice válido
+        if mejor_f1_index < len(thresholds):
+            self.best_threshold_ = thresholds[mejor_f1_index]
+        else:
+            self.best_threshold_ = 0.5
+
+        return self
+    def predict(self, X):
+        """
+        Método que realiza predicciones según el umbral óptimo
+        """
+        if self.model_ is None:
+            raise RuntimeError("El modelo no ha sido entrenado todavía.")
+        #Predict del modelo de keras
+        probabilidades = self.model_.predict(X, verbose=0)
+        #Utilizamos el mejor umbral calculado del fit para nuestras predicciones
+        return (probabilidades > self.best_threshold_).astype(int).flatten()
+
+    def predict_proba(self, X):
+        """
+        Devuelve una lista de diccionarios con las probabilidades para cada clase.
+        Ejemplo: [{'negativa': 0.1, 'positiva': 0.9}, ...]
+        El índice de la lista se corresponde fila a fila con el orden del dataframe.
+        """
+        if self.model_ is None:
+            raise RuntimeError("El modelo no ha sido entrenado todavía.")
+
+        # Obtenemos la probabilidad de la clase 1
+        prob_positiva = self.model_.predict(X, verbose=0).flatten()
+        
+        # Obtenemos la probabilidad de la clase 0 = 1 - P('clase 1')
+        prob_negativa = 1 - prob_positiva
+
+        # Creamos una lista de diccionarios con las probabilidades
+        resultados = []
+        for p_neg, p_pos in zip(prob_negativa, prob_positiva):
+            resultados.append({
+                "clase_0_no": round(float(p_neg), 2),
+                "clase_1_yes": round(float(p_pos), 2)
+            })
+            
+        return resultados
+
+    def _construir_modelo(self, input_dim):
+        """Método interno de la clase para construir el modelo según los parámetros de inicialización"""
+        
+        #Modelo secuencial
+        self.model_ = models.Sequential()
+        #Para cada capa oculta seteamos una semilla. 
+        #Si es la primera, definimos también la capa de entrada.
+        #Se asigna el dropout fijo a las siguientes capas ocultas
+        for i, neuronas in enumerate(self.capas_ocultas):
+            seed_capa = self.random_state + i if self.random_state else None
+            if i == 0:
+                self.model_.add(layers.Dense(neuronas, activation='relu', input_shape=(input_dim,)))
+            else:
+                self.model_.add(layers.Dense(neuronas, activation='relu'))
+            self.model_.add(layers.Dropout(self.dropout_rate, seed=seed_capa))
+
+        #Salida sigmoidea porque necesitamos predicción 0 o 1
+        self.model_.add(layers.Dense(1, activation='sigmoid'))
+
+        optimizador = optimizers.Adam(learning_rate=self.learning_rate)
+        self.model_.compile(optimizer=optimizador,
+                            loss='binary_crossentropy',
+                            metrics=['accuracy'])
+    
+    def _graficar_evolucion(self):
+        """Método para graficar la evolución del entrenamiento"""
+        if self.history_ is None:
+            raise RuntimeError("El modelo no ha sido entrenado todavía.")
+        hist = self.history_.history
+        loss = hist['loss']
+        val_loss = hist['val_loss']
+        accuracy = hist['accuracy']
+        val_accuracy = hist['val_accuracy']
+
+        rango_epocas = range(1, len(loss) + 1)
+
+        plt.figure(figsize=(14, 5))
+        plt.subplot(1, 2, 1)
+        plt.plot(rango_epocas, loss, label='Error de entrenamiento')
+        plt.plot(rango_epocas, val_loss, label='Error de validación')
+        plt.title('Evolución de la Pérdida')
+        plt.xlabel('Época')
+        plt.ylabel('Pérdida (Binary Crossentropy)')
+        plt.legend(loc='upper right')
+        plt.grid(True, linestyle='--', alpha=0.6)
+
+        plt.subplot(1, 2, 2)
+        plt.plot(rango_epocas, accuracy, label='Train Accuracy')
+        plt.plot(rango_epocas, val_accuracy, label='Val Accuracy')
+        plt.title('Evolución del Accuracy')
+        plt.xlabel('Época')
+        plt.ylabel('Accuracy')
+        plt.legend(loc='lower right')
+        plt.grid(True, linestyle='--', alpha=0.6)
+
+        plt.tight_layout()
+        plt.show()
+    
+    def __getstate__(self):
+        """
+        Prepara el objeto para ser guardado con Pickle/Joblib.
+        TensorFlow no es compatible con pickle, así que guardamos los pesos manualmente.
+        """
+        state = self.__dict__.copy()
+        if self.model_ is not None:
+            state['model_weights_'] = self.model_.get_weights()
+            state['input_dim_'] = self.model_.input_shape[1]
+
+        if 'model_' in state:
+            del state['model_']
+
+        if 'history_' in state:
+            del state['history_']
+            
+        return state
+
+    def __setstate__(self, state):
+        """
+        Restaura el objeto desde Pickle/Joblib.
+        Reconstruye el modelo de Keras y le carga los pesos.
+        """
+        self.__dict__.update(state)
+
+        if 'model_weights_' in state:
+            self._construir_modelo(state['input_dim_'])
+            self.model_.set_weights(state['model_weights_'])
+            del self.model_weights_
+            del self.input_dim_
+        else:
+            self.model_ = None
 
 def aplicar_imputacion_numerica_guardada(df_nuevo: pd.DataFrame, variable_a_imputar: str):
     '''
